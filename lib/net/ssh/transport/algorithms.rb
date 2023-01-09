@@ -37,7 +37,8 @@ module Net
                        rsa-sha2-256
                        rsa-sha2-512],
 
-          kex: %w[ecdh-sha2-nistp521
+          kex: %w[ext-info-c
+                  ecdh-sha2-nistp521
                   ecdh-sha2-nistp384
                   ecdh-sha2-nistp256
                   diffie-hellman-group-exchange-sha256
@@ -105,6 +106,9 @@ module Net
         # The type of host key that will be used for this session.
         attr_reader :host_key
 
+        # Which signature algorithms are supported
+        attr_reader :supported_signature_algs
+
         # The type of the cipher to use to encrypt packets sent from the client to
         # the server.
         attr_reader :encryption_client
@@ -153,6 +157,11 @@ module Net
           @algorithms = {}
           @pending = @initialized = false
           @client_packet = @server_packet = nil
+
+          # according to the spec, it MAY be reasonable to default to ssh-rsa (since it's technically deprecated now, probably not - but this is necessary)
+          # if we receive an EXT_INFO packet, we'll update this to use those algorithms
+          @supported_signature_algs = ["ssh-rsa"]
+
           prepare_preferred_algorithms!
         end
 
@@ -173,6 +182,23 @@ module Net
           send_kexinit
         end
 
+        def accept_ext_info(packet)
+          info { "got EXT_INFO from server" }
+
+          data = { raw: packet.content }
+
+          nr_extensions = packet.read_long
+          for extension in 1..nr_extensions do
+            extension_name = packet.read_string
+            if extension_name == "server-sig-algs"
+              @supported_signature_algs = packet.read_string.split(/,/)
+              debug { "supported sig algs: #{@supported_signature_algs}" }
+            else
+              # discard it
+              packet.read_buffer
+            end
+          end
+        end
         # Called by the transport layer when a KEXINIT packet is received, indicating
         # that the server wants to exchange keys. This can be spontaneous, or it
         # can be in response to a client-initiated rekey request (see #rekey!). Either
@@ -390,7 +416,6 @@ module Net
           @compression_server = negotiate(:compression_server)
           @language_client    = negotiate(:language_client) rescue ""
           @language_server    = negotiate(:language_server) rescue ""
-
           debug do
             "negotiated:\n" +
               %i[kex host_key encryption_server encryption_client hmac_client hmac_server
